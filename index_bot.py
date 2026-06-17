@@ -36,6 +36,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SA_JSON = os.environ["GCP_SA_JSON"]                         # nội dung JSON của service account
 MAX_URLS = int(os.environ.get("MAX_URLS", "200"))          # trần URL kiểm tra mỗi lần
 DO_SUBMIT = os.environ.get("DO_SUBMIT_INDEXING", "true").lower() == "true"
+SUBMIT_LIMIT = int(os.environ.get("SUBMIT_LIMIT", "180"))  # Indexing API free = 200/ngày, chừa headroom
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET_HOURS", "7"))    # giờ VN = UTC+7
 # Nguồn lấy danh sách URL: auto (sitemap trước, không được thì đọc tab Sheet) | sitemap | sheet
 URL_SOURCE = os.environ.get("URL_SOURCE", "auto").lower()
@@ -123,14 +124,20 @@ def inspect_url(sc, url):
 
 
 def submit_indexing(idx, url):
+    """Trả 'ok' | 'quota' (hết quota ngày) | 'err'."""
     try:
         idx.urlNotifications().publish(
             body={"url": url, "type": "URL_UPDATED"}
         ).execute()
-        return True
+        return "ok"
+    except HttpError as e:
+        if e.resp.status == 429:
+            return "quota"
+        print(f"[warn] submit indexing lỗi {e.resp.status}: {url}")
+        return "err"
     except Exception as e:
-        print(f"[warn] submit indexing thất bại {url}: {e}")
-        return False
+        print(f"[warn] submit indexing lỗi {type(e).__name__}: {url}")
+        return "err"
 
 
 # Layout ma trận: mỗi URL 1 hàng, mỗi lần chạy thêm 1 cột ngày (icon trạng thái)
@@ -186,10 +193,18 @@ def write_matrix(sheets, results, day):
         grid[rowmap[url]] = r
 
     grid = [fit(r) for r in grid]
-    sheets.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1",
-        valueInputOption="RAW", body={"values": grid},
-    ).execute()
+    for attempt in range(4):                  # retry vì mạng đôi khi rớt SSL khi ghi lô lớn
+        try:
+            sheets.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1",
+                valueInputOption="RAW", body={"values": grid},
+            ).execute()
+            return
+        except Exception as e:
+            if attempt == 3:
+                raise
+            print(f"[warn] ghi Sheet lỗi, thử lại {attempt + 1}/3: {type(e).__name__}")
+            time.sleep(4 * (attempt + 1))
 
 
 def send_telegram(text):
@@ -228,6 +243,7 @@ def main():
     results = []
     n_ok = n_no = n_err = n_submit = 0
     not_indexed = []
+    quota_hit = False
 
     for i, url in enumerate(urls, 1):
         state, verdict = inspect_url(sc, url)
@@ -241,25 +257,38 @@ def main():
             n_no += 1
             not_indexed.append((url, state))
             icon = "🟡"
-            if DO_SUBMIT and submit_indexing(idx, url):
-                icon = "🟡🚀"   # chưa index -> đã ép lại
-                n_submit += 1
+            if DO_SUBMIT and not quota_hit and n_submit < SUBMIT_LIMIT:
+                r = submit_indexing(idx, url)
+                if r == "ok":
+                    icon = "🟡🚀"   # chưa index -> đã ép lại
+                    n_submit += 1
+                elif r == "quota":
+                    quota_hit = True   # hết quota ngày -> ngừng ép, chờ mai
         results.append((url, state, icon))
         if i % 20 == 0:
             print(f"  ...{i}/{len(urls)}")
         time.sleep(0.4)  # nương theo quota URL Inspection (~600/phút)
 
-    write_matrix(sheets, results, day)
+    sheet_ok = True
+    try:
+        write_matrix(sheets, results, day)
+    except Exception as e:
+        sheet_ok = False
+        print(f"[error] không ghi được Sheet sau khi thử lại: {e}")
 
     # ---- Tóm tắt Telegram ----
     lines = [
         f"📊 <b>Báo cáo Index — {day}</b>",
-        f"🌐 {SITE_URL}",
+        f"🌐 {SITE_URL.replace('sc-domain:', '')}",
         f"✅ Đã index: <b>{n_ok}</b>/{len(urls)}",
         f"🟡 Chưa index: <b>{n_no}</b>",
         f"🔴 Lỗi/Unknown: {n_err}",
         f"🚀 Vừa ép index lại: {n_submit}",
     ]
+    if quota_hit or n_no > n_submit:
+        lines.append(f"⏳ Quota ép index 200/ngày — còn <b>{n_no - n_submit}</b> URL chờ ép các ngày sau")
+    if not sheet_ok:
+        lines.append("⚠️ Ghi Google Sheet lỗi mạng — số liệu vẫn đúng, sẽ ghi lại lần chạy sau")
     if not_indexed:
         lines.append("\n<b>Một số URL chưa index:</b>")
         for url, state in not_indexed[:10]:
