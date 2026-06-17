@@ -35,6 +35,9 @@ SA_JSON = os.environ["GCP_SA_JSON"]                         # nội dung JSON c�
 MAX_URLS = int(os.environ.get("MAX_URLS", "200"))          # trần URL kiểm tra mỗi lần
 DO_SUBMIT = os.environ.get("DO_SUBMIT_INDEXING", "true").lower() == "true"
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET_HOURS", "7"))    # giờ VN = UTC+7
+# Nguồn lấy danh sách URL: auto (sitemap trước, không được thì đọc tab Sheet) | sitemap | sheet
+URL_SOURCE = os.environ.get("URL_SOURCE", "auto").lower()
+URLS_TAB = os.environ.get("URLS_TAB", "URLs")              # tab chứa danh sách URL (cột A)
 
 SCOPES = [
     "https://www.googleapis.com/auth/webmasters.readonly",  # URL Inspection
@@ -75,6 +78,32 @@ def get_sitemap_urls(sitemap_url, _depth=0):
                 urls.append(loc.text.strip())
     except Exception as e:
         print(f"[warn] không đọc được sitemap {sitemap_url}: {e}")
+    return urls
+
+
+def get_urls_from_sheet(sheets):
+    """Đọc danh sách URL từ cột A của tab URLS_TAB (bỏ dòng tiêu đề)."""
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID, range=f"{URLS_TAB}!A2:A"
+        ).execute()
+        return [r[0].strip() for r in res.get("values", [])
+                if r and r[0].strip().startswith("http")]
+    except Exception as e:
+        print(f"[warn] không đọc được tab '{URLS_TAB}': {e}")
+        return []
+
+
+def get_target_urls(sheets):
+    """Lấy URL theo URL_SOURCE. Site có tường challenge (vd .vn) -> dùng tab Sheet."""
+    urls = []
+    if URL_SOURCE in ("sitemap", "auto"):
+        urls = get_sitemap_urls(SITEMAP_URL)
+        if urls:
+            print(f"[info] {len(urls)} URL lấy từ sitemap")
+    if not urls and URL_SOURCE in ("sheet", "auto"):
+        urls = get_urls_from_sheet(sheets)
+        print(f"[info] {len(urls)} URL lấy từ tab '{URLS_TAB}'")
     return urls
 
 
@@ -156,10 +185,13 @@ def main():
     idx = build("indexing", "v3", credentials=creds, cache_discovery=False)
     sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    urls = list(dict.fromkeys(get_sitemap_urls(SITEMAP_URL)))[:MAX_URLS]
-    print(f"[info] {len(urls)} URL từ sitemap")
+    urls = list(dict.fromkeys(get_target_urls(sheets)))[:MAX_URLS]
     if not urls:
-        send_telegram(f"⚠️ <b>Index bot</b> ({day})\nKhông lấy được URL từ sitemap: {SITEMAP_URL}")
+        send_telegram(
+            f"⚠️ <b>Index bot</b> ({day})\nChưa có URL để kiểm tra. "
+            f"Hãy dán link bài vào tab '<b>{URLS_TAB}</b>' của Sheet, hoặc mở tường chặn cho sitemap."
+        )
+        print("[stop] không có URL nào")
         sys.exit(0)
 
     ensure_tab_and_header(sheets)
