@@ -25,7 +25,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # ----------------------------- Cấu hình -----------------------------
-SITE_URL = os.environ["SITE_URL"].rstrip("/") + "/"        # PHẢI khớp property trong GSC
+_raw_site = os.environ["SITE_URL"].strip()                 # PHẢI khớp property trong GSC
+# Domain property dùng "sc-domain:domain.com"; URL-prefix thì thêm "/" cuối
+SITE_URL = _raw_site if _raw_site.startswith("sc-domain:") else _raw_site.rstrip("/") + "/"
 SITEMAP_URL = os.environ.get("SITEMAP_URL", SITE_URL + "sitemap.xml")
 SHEET_ID = os.environ["SHEET_ID"]
 SHEET_TAB = os.environ.get("SHEET_TAB", "Index Report")
@@ -109,7 +111,7 @@ def get_target_urls(sheets):
 
 def inspect_url(sc, url):
     """Trả về (coverageState, verdict)."""
-    body = {"inspectionUrl": url, "siteUrl": SITE_URL, "languageCode": "vi-VN"}
+    body = {"inspectionUrl": url, "siteUrl": SITE_URL, "languageCode": "en-US"}
     try:
         res = sc.urlInspection().index().inspect(body=body).execute()
         r = res.get("inspectionResult", {}).get("indexStatusResult", {})
