@@ -131,8 +131,11 @@ def submit_indexing(idx, url):
         return False
 
 
-def ensure_tab_and_header(sheets):
-    """Tạo tab nếu chưa có + ghi header."""
+# Layout ma trận: mỗi URL 1 hàng, mỗi lần chạy thêm 1 cột ngày (icon trạng thái)
+BASE_HEADERS = ["URL", "Trạng thái gần nhất", "Cập nhật lúc"]
+
+
+def ensure_tab(sheets):
     meta = sheets.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
     tabs = [s["properties"]["title"] for s in meta.get("sheets", [])]
     if SHEET_TAB not in tabs:
@@ -140,26 +143,50 @@ def ensure_tab_and_header(sheets):
             spreadsheetId=SHEET_ID,
             body={"requests": [{"addSheet": {"properties": {"title": SHEET_TAB}}}]},
         ).execute()
-    # đảm bảo header
-    header = ["Ngày", "URL", "Trạng thái index", "Verdict", "Đã submit lại"]
-    rng = f"{SHEET_TAB}!A1:E1"
-    cur = sheets.spreadsheets().values().get(spreadsheetId=SHEET_ID, range=rng).execute()
-    if not cur.get("values"):
-        sheets.spreadsheets().values().update(
-            spreadsheetId=SHEET_ID, range=rng,
-            valueInputOption="RAW", body={"values": [header]},
-        ).execute()
 
 
-def append_rows(sheets, rows):
-    if not rows:
-        return
-    sheets.spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_TAB}!A:E",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body={"values": rows},
+def write_matrix(sheets, results, day):
+    """Đọc lưới hiện có -> cập nhật trạng thái -> ghi đè (gọn, không trùng hàng theo ngày)."""
+    grid = sheets.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1:ZZ"
+    ).execute().get("values", [])
+    if not grid:
+        grid = [list(BASE_HEADERS)]
+
+    header = grid[0]
+    for i, h in enumerate(BASE_HEADERS):       # đảm bảo 3 cột cố định
+        if i >= len(header):
+            header.append(h)
+        else:
+            header[i] = h
+    if day in header:                          # cột lịch sử cho hôm nay
+        col = header.index(day)
+    else:
+        col = len(header)
+        header.append(day)
+    grid[0] = header
+    width = len(header)
+
+    rowmap = {row[0]: idx for idx, row in enumerate(grid)
+              if idx > 0 and row and row[0]}
+
+    def fit(r):
+        return r + [""] * (width - len(r)) if len(r) < width else r
+
+    for url, state, icon in results:
+        if url in rowmap:
+            r = fit(grid[rowmap[url]])
+        else:
+            r = fit([url])
+            grid.append(r)
+            rowmap[url] = len(grid) - 1
+        r[0], r[1], r[2], r[col] = url, state, day, icon
+        grid[rowmap[url]] = r
+
+    grid = [fit(r) for r in grid]
+    sheets.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1",
+        valueInputOption="RAW", body={"values": grid},
     ).execute()
 
 
@@ -194,32 +221,33 @@ def main():
         print("[stop] không có URL nào")
         sys.exit(0)
 
-    ensure_tab_and_header(sheets)
+    ensure_tab(sheets)
 
-    rows = []
+    results = []
     n_ok = n_no = n_err = n_submit = 0
     not_indexed = []
 
     for i, url in enumerate(urls, 1):
         state, verdict = inspect_url(sc, url)
-        is_indexed = state in INDEXED_STATES
-        submitted = ""
-        if is_indexed:
+        if state in INDEXED_STATES:
+            icon = "✅"
             n_ok += 1
         elif state.startswith("ERROR"):
+            icon = "🔴"
             n_err += 1
         else:
             n_no += 1
             not_indexed.append((url, state))
+            icon = "🟡"
             if DO_SUBMIT and submit_indexing(idx, url):
-                submitted = "✅"
+                icon = "🟡🚀"   # chưa index -> đã ép lại
                 n_submit += 1
-        rows.append([day, url, state, verdict, submitted])
+        results.append((url, state, icon))
         if i % 20 == 0:
             print(f"  ...{i}/{len(urls)}")
         time.sleep(0.4)  # nương theo quota URL Inspection (~600/phút)
 
-    append_rows(sheets, rows)
+    write_matrix(sheets, results, day)
 
     # ---- Tóm tắt Telegram ----
     lines = [
