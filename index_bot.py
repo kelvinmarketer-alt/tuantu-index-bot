@@ -193,18 +193,23 @@ def write_matrix(sheets, results, day):
         grid[rowmap[url]] = r
 
     grid = [fit(r) for r in grid]
-    for attempt in range(4):                  # retry vì mạng đôi khi rớt SSL khi ghi lô lớn
-        try:
-            sheets.spreadsheets().values().update(
-                spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1",
-                valueInputOption="RAW", body={"values": grid},
-            ).execute()
-            return
-        except Exception as e:
-            if attempt == 3:
-                raise
-            print(f"[warn] ghi Sheet lỗi, thử lại {attempt + 1}/3: {type(e).__name__}")
-            time.sleep(4 * (attempt + 1))
+    # Ghi theo lô nhỏ để tránh rớt SSL khi đẩy payload lớn; mỗi lô tự retry
+    CHUNK = 150
+    for start in range(0, len(grid), CHUNK):
+        block = grid[start:start + CHUNK]
+        a1 = f"{SHEET_TAB}!A{start + 1}"
+        for attempt in range(4):
+            try:
+                sheets.spreadsheets().values().update(
+                    spreadsheetId=SHEET_ID, range=a1,
+                    valueInputOption="RAW", body={"values": block},
+                ).execute()
+                break
+            except Exception as e:
+                if attempt == 3:
+                    raise
+                print(f"[warn] ghi {a1} lỗi, thử lại {attempt + 1}/3: {type(e).__name__}")
+                time.sleep(3 * (attempt + 1))
 
 
 def send_telegram(text):
