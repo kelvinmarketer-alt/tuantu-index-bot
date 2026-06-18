@@ -110,16 +110,26 @@ def get_target_urls(sheets):
     return urls
 
 
+_err_shown = 0  # in vài lỗi đầu để chẩn đoán (rate-limit? phân quyền?)
+
+
 def inspect_url(sc, url):
     """Trả về (coverageState, verdict)."""
+    global _err_shown
     body = {"inspectionUrl": url, "siteUrl": SITE_URL, "languageCode": "en-US"}
     try:
         res = sc.urlInspection().index().inspect(body=body).execute()
         r = res.get("inspectionResult", {}).get("indexStatusResult", {})
         return r.get("coverageState", "Unknown"), r.get("verdict", "")
     except HttpError as e:
+        if _err_shown < 4:
+            print(f"[inspect-err] {e.resp.status}: {str(e)[:220]}")
+            _err_shown += 1
         return f"ERROR {e.resp.status}", ""
     except Exception as e:
+        if _err_shown < 4:
+            print(f"[inspect-err] {type(e).__name__}: {str(e)[:220]}")
+            _err_shown += 1
         return f"ERROR {type(e).__name__}", ""
 
 
@@ -154,8 +164,10 @@ def ensure_tab(sheets):
         ).execute()
 
 
-def write_matrix(sheets, results, day):
+def write_matrix(creds, results, day):
     """Đọc lưới hiện có -> cập nhật trạng thái -> ghi đè (gọn, không trùng hàng theo ngày)."""
+    # Dựng client Sheet MỚI ngay tại đây (run dài làm kết nối cũ bị stale -> SSL EOF)
+    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
     grid = sheets.spreadsheets().values().get(
         spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1:ZZ"
     ).execute().get("values", [])
@@ -210,6 +222,7 @@ def write_matrix(sheets, results, day):
                     raise
                 print(f"[warn] ghi {a1} lỗi, thử lại {attempt + 1}/3: {type(e).__name__}")
                 time.sleep(3 * (attempt + 1))
+                sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
 def send_telegram(text):
@@ -276,7 +289,7 @@ def main():
 
     sheet_ok = True
     try:
-        write_matrix(sheets, results, day)
+        write_matrix(creds, results, day)
     except Exception as e:
         sheet_ok = False
         print(f"[error] không ghi được Sheet sau khi thử lại: {e}")
