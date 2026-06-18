@@ -62,15 +62,42 @@ def get_credentials():
     return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
 
+# Header giống trình duyệt để né WAF "One moment" / lỗi 415 của .vn
+SITEMAP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "vi,en;q=0.9",
+}
+
+
+def _fetch_xml(url):
+    """Tải sitemap có retry; bỏ qua trang challenge WAF."""
+    last = None
+    for i in range(3):
+        try:
+            r = requests.get(url, timeout=30, headers=SITEMAP_HEADERS)
+            head = r.content[:600]
+            if r.status_code == 200 and b"<" in head and b"One moment" not in head:
+                return r.content
+            last = f"HTTP {r.status_code}" + (" (WAF challenge)" if b"One moment" in head else "")
+        except Exception as e:
+            last = type(e).__name__
+        time.sleep(3 * (i + 1))
+    print(f"[warn] không tải được {url}: {last}")
+    return None
+
+
 def get_sitemap_urls(sitemap_url, _depth=0):
     """Đọc sitemap (hỗ trợ cả sitemap index lồng nhau)."""
     urls = []
     if _depth > 5:
         return urls
+    content = _fetch_xml(sitemap_url)
+    if not content:
+        return urls
     try:
-        r = requests.get(sitemap_url, timeout=30, headers={"User-Agent": "tuantu-index-bot"})
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
+        root = ET.fromstring(content)
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
         children = root.findall(".//sm:sitemap/sm:loc", ns)
         if children:  # đây là sitemap index -> đệ quy
@@ -80,7 +107,7 @@ def get_sitemap_urls(sitemap_url, _depth=0):
             for loc in root.findall(".//sm:url/sm:loc", ns):
                 urls.append(loc.text.strip())
     except Exception as e:
-        print(f"[warn] không đọc được sitemap {sitemap_url}: {e}")
+        print(f"[warn] parse sitemap {sitemap_url}: {e}")
     return urls
 
 
@@ -97,16 +124,31 @@ def get_urls_from_sheet(sheets):
         return []
 
 
+def persist_urls_to_tab(sheets, urls):
+    """Lưu danh sách URL vào tab dự phòng (ghi lô để khỏi rớt SSL)."""
+    try:
+        rows = [["URL"]] + [[u] for u in urls]
+        for start in range(0, len(rows), 150):
+            sheets.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID, range=f"{URLS_TAB}!A{start + 1}",
+                valueInputOption="RAW", body={"values": rows[start:start + 150]},
+            ).execute()
+    except Exception as e:
+        print(f"[warn] lưu tab '{URLS_TAB}' lỗi: {type(e).__name__}")
+
+
 def get_target_urls(sheets):
-    """Lấy URL theo URL_SOURCE. Site có tường challenge (vd .vn) -> dùng tab Sheet."""
+    """Sitemap trước; lấy được thì lưu vào tab dự phòng. Sitemap lỗi (WAF) -> đọc tab."""
     urls = []
     if URL_SOURCE in ("sitemap", "auto"):
         urls = get_sitemap_urls(SITEMAP_URL)
         if urls:
             print(f"[info] {len(urls)} URL lấy từ sitemap")
-    if not urls and URL_SOURCE in ("sheet", "auto"):
+            persist_urls_to_tab(sheets, urls)
+            return urls
+    if URL_SOURCE in ("sheet", "auto"):
         urls = get_urls_from_sheet(sheets)
-        print(f"[info] {len(urls)} URL lấy từ tab '{URLS_TAB}'")
+        print(f"[info] {len(urls)} URL lấy từ tab '{URLS_TAB}' (dự phòng)")
     return urls
 
 
