@@ -17,9 +17,20 @@ ENV:
   DAYS             số ngày lùi (mặc định 90)
   MIN_IMPR         ngưỡng impressions tối thiểu của URL thứ 2 để coi là cắn nhau (mặc định 10)
 """
-import os, json, datetime
+import os, json, time, datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+
+def _retry(fn, tries=4, base=2.0):
+    """Gọi lại khi gặp lỗi tạm thời (503/500 của Google API)."""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            if i == tries - 1:
+                raise
+            time.sleep(base * (i + 1))
 
 SCOPES = [
     "https://www.googleapis.com/auth/webmasters.readonly",
@@ -109,13 +120,13 @@ def analyze(rows):
 
 def write_sheet(sh, data):
     # tạo tab nếu chưa có
-    meta = sh.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    meta = _retry(lambda: sh.spreadsheets().get(spreadsheetId=SHEET_ID).execute())
     tabs = [s["properties"]["title"] for s in meta["sheets"]]
     if TAB not in tabs:
-        sh.spreadsheets().batchUpdate(
+        _retry(lambda: sh.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
             body={"requests": [{"addSheet": {"properties": {"title": TAB}}}]},
-        ).execute()
+        ).execute())
     today = datetime.date.today().isoformat()
     header = [
         [f"GSC XÁC NHẬN ĂN THỊT TỪ KHÓA — {SITE_URL} — {DAYS} ngày — cập nhật {today}"],
@@ -130,10 +141,10 @@ def write_sheet(sh, data):
         d["u2"].replace(SITE_URL, "/"), d["i2"], d["p2"],
     ] for d in data]
     values = header + body_rows
-    sh.spreadsheets().values().update(
+    _retry(lambda: sh.spreadsheets().values().update(
         spreadsheetId=SHEET_ID, range=f"'{TAB}'!A1",
         valueInputOption="RAW", body={"values": values},
-    ).execute()
+    ).execute())
     return len(body_rows)
 
 
@@ -147,6 +158,11 @@ def main():
     data = analyze(rows)
     n_danger = sum(1 for d in data if d["danger"].startswith("🔴"))
     print(f"  Truy vấn cắn nhau: {len(data)} (trong đó Bài↔SP: {n_danger})")
+    # in ra log để có dữ liệu kể cả khi ghi sheet lỗi
+    print("--- TOP 40 truy vấn cắn nhau ---")
+    for d in data[:40]:
+        print(f"[{d['danger']}] {d['q']} | {d['nurls']}URL {d['impr']}impr | "
+              f"{d['u1'].replace(SITE_URL,'/')}(#{d['p1']}) vs {d['u2'].replace(SITE_URL,'/')}(#{d['p2']})")
     if not SHEET_ID:
         print("!! Thiếu CANNIBAL_SHEET_ID/SHEET_ID — chỉ in, không ghi sheet.")
         for d in data[:30]:
