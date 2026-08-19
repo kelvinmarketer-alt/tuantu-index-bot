@@ -161,8 +161,16 @@ def main():
     _retry(lambda: sh.spreadsheets().values().update(
         spreadsheetId=SHEET_ID, range=f"'{TAB}'!A1", valueInputOption="RAW", body={"values": values}).execute())
     print(f"Đã ghi {len(body)} dòng vào '{TAB}'. Tóm tắt bucket: {counts}")
-    for d in data[:25]:
-        print(f"  [{d['bk']}] {d['u'].replace(HOST,'')} | pos {d['pos']} ctr {d['ctr']}% impr {d['impr']}")
+    # Dump JSON đầy đủ các ô CẦN LÀM để pipeline ngoài đọc lại.
+    want = {"🔥 Quick win (11–20)": "quickwin", "🎯 Cận kề (21–40)": "canke",
+            "✍️ CTR thấp (top nhưng ít click)": "ctrlow"}
+    dump = {v: [] for v in want.values()}
+    for d in data:
+        if d["bk"] in want:
+            dump[want[d["bk"]]].append([d["u"].replace(HOST, ""), d["pos"], d["ctr"], d["impr"], d["type"]])
+    print("AUDITJSON_START")
+    print(json.dumps(dump, ensure_ascii=False))
+    print("AUDITJSON_END")
 
 
 if __name__ == "__main__":
