@@ -41,13 +41,6 @@ TZ_OFFSET = int(os.environ.get("TZ_OFFSET_HOURS", "7"))    # giờ VN = UTC+7
 # Nguồn lấy danh sách URL: auto (sitemap trước, không được thì đọc tab Sheet) | sitemap | sheet
 URL_SOURCE = os.environ.get("URL_SOURCE", "auto").lower()
 URLS_TAB = os.environ.get("URLS_TAB", "URLs")              # tab chứa danh sách URL (cột A)
-# FORCE_URLS: các URL LUÔN ép index (dù đã index) để buộc Google crawl lại — vd trang chủ,
-# bài vừa đổi title. Phân tách bằng xuống dòng hoặc dấu phẩy. Được ưu tiên submit trước.
-FORCE_URLS = [u.strip() for u in os.environ.get("FORCE_URLS", "").replace(",", "\n").splitlines()
-              if u.strip().startswith("http")]
-DUMP_JSON = os.environ.get("DUMP_JSON", "")                # xuất kết quả audit ra file JSON (tùy chọn)
-URLS_FILE = os.environ.get("URLS_FILE", "")                # nếu set: đọc danh sách URL từ file (bỏ sitemap)
-SLEEP_SEC = float(os.environ.get("SLEEP_SEC", "0.4"))      # giãn nhịp giữa các lần inspect (tránh cạn cổng)
 
 SCOPES = [
     "https://www.googleapis.com/auth/webmasters.readonly",  # URL Inspection
@@ -296,16 +289,7 @@ def main():
     idx = build("indexing", "v3", credentials=creds, cache_discovery=False)
     sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    # Nguồn URL: file (nếu có) để chạy dọn tập nhỏ, ngược lại lấy sitemap
-    if URLS_FILE and os.path.exists(URLS_FILE):
-        with open(URLS_FILE, encoding="utf-8") as f:
-            base = [ln.strip() for ln in f if ln.strip().startswith("http")]
-        print(f"[info] {len(base)} URL từ URLS_FILE={URLS_FILE}")
-    else:
-        base = get_target_urls(sheets)
-    # FORCE_URLS lên đầu để chắc chắn được submit trước khi cạn quota
-    urls = list(dict.fromkeys(FORCE_URLS + base))[:MAX_URLS]
-    force_set = set(FORCE_URLS)
+    urls = list(dict.fromkeys(get_target_urls(sheets)))[:MAX_URLS]
     if not urls:
         send_telegram(
             f"⚠️ <b>Index bot</b> ({day})\nChưa có URL để kiểm tra. "
@@ -321,35 +305,29 @@ def main():
     not_indexed = []
     quota_hit = False
 
-    n_force = 0
     for i, url in enumerate(urls, 1):
         state, verdict = inspect_url(sc, url)
-        forced = url in force_set
-        if state.startswith("ERROR"):
-            icon = "🔴"
-            n_err += 1
-        elif state in INDEXED_STATES:
+        if state in INDEXED_STATES:
             icon = "✅"
             n_ok += 1
+        elif state.startswith("ERROR"):
+            icon = "🔴"
+            n_err += 1
         else:
-            icon = "🟡"
             n_no += 1
             not_indexed.append((url, state))
-        # Ép index: URL trong FORCE_URLS ép DÙ đã index (buộc crawl lại); còn lại ép khi chưa index
-        want_submit = (forced or icon == "🟡") and not state.startswith("ERROR")
-        if DO_SUBMIT and want_submit and not quota_hit and n_submit < SUBMIT_LIMIT:
-            r = submit_indexing(idx, url)
-            if r == "ok":
-                icon += "🚀"
-                n_submit += 1
-                if forced:
-                    n_force += 1
-            elif r == "quota":
-                quota_hit = True   # hết quota ngày -> ngừng ép, chờ mai
+            icon = "🟡"
+            if DO_SUBMIT and not quota_hit and n_submit < SUBMIT_LIMIT:
+                r = submit_indexing(idx, url)
+                if r == "ok":
+                    icon = "🟡🚀"   # chưa index -> đã ép lại
+                    n_submit += 1
+                elif r == "quota":
+                    quota_hit = True   # hết quota ngày -> ngừng ép, chờ mai
         results.append((url, state, icon))
         if i % 20 == 0:
             print(f"  ...{i}/{len(urls)}")
-        time.sleep(SLEEP_SEC)  # nương theo quota URL Inspection (~600/phút)
+        time.sleep(0.4)  # nương theo quota URL Inspection (~600/phút)
 
     sheet_ok = True
     try:
@@ -358,15 +336,6 @@ def main():
         sheet_ok = False
         print(f"[error] không ghi được Sheet sau khi thử lại: {e}")
 
-    if DUMP_JSON:
-        try:
-            with open(DUMP_JSON, "w", encoding="utf-8") as f:
-                json.dump([{"url": u, "state": s, "icon": ic} for u, s, ic in results],
-                          f, ensure_ascii=False)
-            print(f"[info] dump {len(results)} kết quả audit -> {DUMP_JSON}")
-        except Exception as e:
-            print(f"[warn] dump json lỗi: {type(e).__name__}: {e}")
-
     # ---- Tóm tắt Telegram ----
     lines = [
         f"📊 <b>Báo cáo Index — {day}</b>",
@@ -374,7 +343,7 @@ def main():
         f"✅ Đã index: <b>{n_ok}</b>/{len(urls)}",
         f"🟡 Chưa index: <b>{n_no}</b>",
         f"🔴 Lỗi/Unknown: {n_err}",
-        f"🚀 Vừa ép index lại: {n_submit}" + (f" (trong đó {n_force} URL ép cưỡng bức)" if n_force else ""),
+        f"🚀 Vừa ép index lại: {n_submit}",
     ]
     if quota_hit or n_no > n_submit:
         lines.append(f"⏳ Quota ép index 200/ngày — còn <b>{n_no - n_submit}</b> URL chờ ép các ngày sau")
