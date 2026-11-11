@@ -28,9 +28,10 @@ def q(s, e, dims):
 out = {"end": end.isoformat()}
 for name, k in (("P1", 0), ("P0", 1), ("P2", 2)):
     e = end - D(days=28 * k); s = e - D(days=27)
-    out[name] = {"range": [s.isoformat(), e.isoformat()], "qp": q(s, e, ["query", "page"])}
+    out[name] = {"range": [s.isoformat(), e.isoformat()], "qp": q(s, e, ["query", "page"]), "pg": q(s, e, ["page"])}
 s90 = end - D(days=89)
 out["Q90"] = {"range": [s90.isoformat(), end.isoformat()], "qp": q(s90, end, ["query", "page"])}
 out["W"] = q(end - D(days=111), end, ["date"])
+out["PW"] = q(end - D(days=111), end, ["page", "date"])
 json.dump(out, open(os.environ.get("OUT", "kw.json"), "w"), ensure_ascii=False)
 print({k: len(v["qp"]) for k, v in out.items() if isinstance(v, dict)})
