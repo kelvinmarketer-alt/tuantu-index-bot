@@ -16,5 +16,10 @@ for p in [x.strip() for x in os.environ["PAGES"].split(",") if x.strip()]:
     rows = sc.searchanalytics().query(siteUrl=SITE, body=body).execute().get("rows", [])
     rows.sort(key=lambda r: -r["impressions"])
     print(f"PAGE\t{p}\t{len(rows)}")
+    try:  # 13/11: kèm trạng thái index (URL Inspection, chỉ đọc)
+        ir = sc.urlInspection().index().inspect(body={"inspectionUrl": HOST + p, "siteUrl": SITE, "languageCode": "vi"}).execute().get("inspectionResult", {}).get("indexStatusResult", {})
+        print(f"INDEX\t{p}\t{ir.get('verdict')}\t{ir.get('coverageState')}\t{ir.get('lastCrawlTime')}\t{ir.get('googleCanonical')}")
+    except Exception as e:
+        print(f"INDEX\t{p}\tERR\t{str(e)[:120]}")
     for r in rows:
         print(f"Q\t{p}\t{r['keys'][0]}\t{r['impressions']}\t{r['clicks']}\t{round(r['position'],1)}")
