@@ -36,7 +36,7 @@ print(f"KỲ\t{s28}\t{end}")
 for k, a in sorted(agg.items(), key=lambda x: -x[1][1]):
     print(f"TYPE\t{k}\t{a[3]}\t{a[0]}\t{a[1]}\t{round(a[0]/a[1]*100,2) if a[1] else 0}\t{round(a[2]/a[1],1) if a[1] else 0}")
 for t in ("product", "post", "product_cat"):
-    top = sorted([r for r in rows if typ(r["keys"][0]) == t], key=lambda r: -r["clicks"])[:8]
+    top = sorted([r for r in rows if typ(r["keys"][0]) == t], key=lambda r: -r["clicks"])[:int(os.environ.get("TOPN") or 8)]
     for r in top: print(f"TOP\t{t}\t{r['keys'][0].replace(HOST,'')}\t{r['clicks']}\t{r['impressions']}\t{round(r['position'],1)}")
 for r in q(["device"]): print(f"DEV\t{r['keys'][0]}\t{r['clicks']}\t{r['impressions']}\t{round(r['ctr']*100,2)}\t{round(r['position'],1)}")
 qs = q(["query"]); br = [r for r in qs if re.search(r"tu[aâấ]n t[uú]|tuantu", r["keys"][0])]

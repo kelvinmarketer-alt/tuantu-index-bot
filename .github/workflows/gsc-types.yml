@@ -1,5 +1,8 @@
 name: GSC Types Summary
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      topn: { description: 'Số trang top mỗi loại', required: false, default: '8' }
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -12,3 +15,4 @@ jobs:
         env:
           SITE_URL: ${{ secrets.SITE_URL }}
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          TOPN: ${{ inputs.topn }}
